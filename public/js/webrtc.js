@@ -203,6 +203,18 @@ async function rankIceServers(iceServers) {
  * parallel RTCPeerConnections on every page load).
  * @param {boolean} forceRefresh - Force refresh cache
  */
+// ?ice=relay 强制只走 TURN；?ice=tcp 额外只保留 TURN over TCP/TLS（规避运营商对 UDP 的 QoS）
+const ICE_MODE = (() => {
+  try {
+    return new URLSearchParams(location.search).get('ice') || '';
+  } catch (e) {
+    return '';
+  }
+})();
+const FORCE_ICE_RELAY = ICE_MODE === 'relay' || ICE_MODE === 'tcp';
+const ICE_SERVERS_URL = ICE_MODE === 'tcp' ? '/api/ice-servers?transport=tcp' : '/api/ice-servers';
+const ICE_STORAGE_KEY = ICE_MODE ? `clouddrop_ice_servers_${ICE_MODE}` : 'clouddrop_ice_servers';
+
 async function fetchIceServers(forceRefresh = false) {
   const now = Date.now();
 
@@ -214,7 +226,7 @@ async function fetchIceServers(forceRefresh = false) {
   // Try sessionStorage cache (survives reloads within the same session)
   if (!forceRefresh) {
     try {
-      const stored = sessionStorage.getItem('clouddrop_ice_servers');
+      const stored = sessionStorage.getItem(ICE_STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (parsed && Array.isArray(parsed.servers) && (now - parsed.timestamp) < ICE_SERVERS_CACHE_TTL * 6) {
@@ -237,7 +249,7 @@ async function fetchIceServers(forceRefresh = false) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3000);
 
-      const response = await fetch('/api/ice-servers', { signal: controller.signal });
+      const response = await fetch(ICE_SERVERS_URL, { signal: controller.signal });
       clearTimeout(timeoutId);
 
       if (response.ok) {
@@ -253,7 +265,7 @@ async function fetchIceServers(forceRefresh = false) {
 
         // Persist to sessionStorage so the next page load skips the probing
         try {
-          sessionStorage.setItem('clouddrop_ice_servers', JSON.stringify({
+          sessionStorage.setItem(ICE_STORAGE_KEY, JSON.stringify({
             servers: rankedServers,
             timestamp: cachedIceServersTimestamp
           }));
@@ -467,7 +479,7 @@ export class WebRTCManager {
         // Enhanced RTCPeerConnection configuration
         const pc = new RTCPeerConnection({
           iceServers,
-          iceTransportPolicy: 'all', // Ensure we gather all candidates (host, srflx, relay)
+          iceTransportPolicy: FORCE_ICE_RELAY ? 'relay' : 'all', // ?ice=relay|tcp 时只发 TURN 候选
           bundlePolicy: 'max-bundle',
           rtcpMuxPolicy: 'require'
         });
@@ -597,8 +609,9 @@ export class WebRTCManager {
   _shouldFastFallback(peerId) {
     const quality = this.connectionQuality.get(peerId);
 
-    // If we only have relay candidates after gathering, P2P won't work
-    if (quality && !quality.p2pPossible && quality.hasRelay) {
+    // 没有任何可用候选（连 TURN 都没有）才切应用层 WS 中继；
+    // 只有 relay 候选说明 TURN 可用，交给 WebRTC 走 TURN 比 WS 中继快得多
+    if (quality && !quality.p2pPossible && !quality.hasRelay) {
       return true;
     }
 

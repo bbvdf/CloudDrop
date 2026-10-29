@@ -159,6 +159,20 @@ async function handleIceServers(request: Request, env: Env): Promise<Response> {
 
   const jsonHeaders = { 'Content-Type': 'application/json' };
 
+  // ?transport=tcp：只保留 STUN 与 TURN over TCP/TLS（443/80），用于规避运营商对 UDP 的 QoS
+  const wantTcp = new URL(request.url).searchParams.get('transport') === 'tcp';
+  const serve = (list: unknown[]): unknown[] => {
+    if (!wantTcp) return list;
+    return list
+      .map((server: unknown) => {
+        const s = server as { urls?: string | string[] };
+        const urls = Array.isArray(s.urls) ? s.urls : [String(s.urls)];
+        const kept = urls.filter((u: string) => u.startsWith('stun:') || u.includes('transport=tcp'));
+        return kept.length ? { ...s, urls: kept } : null;
+      })
+      .filter(Boolean);
+  };
+
   // If TURN credentials are configured, fetch dynamic credentials
   if (env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN) {
     // Throttle by IP so TURN credentials can't be scraped for bandwidth abuse
@@ -173,7 +187,7 @@ async function handleIceServers(request: Request, env: Env): Promise<Response> {
     try {
       // Serve from cache while at least 1h of TTL remains (TTL is 24h)
       if (cachedIceServers && cachedIceServers.expiresAt - Date.now() > 60 * 60 * 1000) {
-        return new Response(JSON.stringify({ iceServers: cachedIceServers.iceServers }), {
+        return new Response(JSON.stringify({ iceServers: serve(cachedIceServers.iceServers) }), {
           headers: { ...jsonHeaders, 'Cache-Control': 'public, max-age=300' },
         });
       }
@@ -204,7 +218,7 @@ async function handleIceServers(request: Request, env: Env): Promise<Response> {
         // TTL 24h：缓存 23h，留 1h 余量；服务函数按"剩余 ≥1h"判有效
         cachedIceServers = { iceServers: filteredServers, expiresAt: Date.now() + 23 * 60 * 60 * 1000 };
 
-        return new Response(JSON.stringify({ iceServers: filteredServers }), {
+        return new Response(JSON.stringify({ iceServers: serve(filteredServers) }), {
           headers: { ...jsonHeaders, 'Cache-Control': 'public, max-age=300' },
         });
       }
