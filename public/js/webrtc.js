@@ -983,7 +983,7 @@ export class WebRTCManager {
 
     // Perfect Negotiation: check for offer collision
     const offerCollision = this.makingOffer.get(peerId) ||
-      (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-offer');
+      pc.signalingState !== 'stable';
 
     this.ignoreOffer.set(peerId, !isPolite && offerCollision);
 
@@ -994,7 +994,7 @@ export class WebRTCManager {
 
     try {
       // If we're in have-local-offer state, we need to rollback first (polite peer)
-      if (pc.signalingState === 'have-local-offer') {
+      if (isPolite && pc.signalingState === 'have-local-offer') {
         debugLog(`[WebRTC] Rolling back local offer for ${peerId}`);
         await pc.setLocalDescription({ type: 'rollback' });
       }
